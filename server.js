@@ -164,15 +164,22 @@ app.get('/api/progress', (req, res) => {
   });
 });
 
+function csvField(value) {
+  const str = String(value ?? '');
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
 app.get('/api/download', (req, res) => {
   if (!job || job.results.length === 0) {
     return res.status(400).send('Нет результатов для скачивания.');
   }
-  const rows = ['number,has_whatsapp,error'];
+  const DELIMITER = ';';
+  const rows = [['number', 'has_whatsapp', 'error'].map(csvField).join(DELIMITER)];
   for (const r of job.results) {
-    rows.push(`${r.number},${r.hasWhatsapp === null ? '' : r.hasWhatsapp},${r.error || ''}`);
+    const status = r.hasWhatsapp === null ? '' : (r.hasWhatsapp ? '+' : '-');
+    rows.push([r.number, status, r.error || ''].map(csvField).join(DELIMITER));
   }
-  const csv = rows.join('\n');
+  const csv = '\uFEFF' + rows.join('\r\n');
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="whatsapp_results.csv"');
   res.send(csv);
