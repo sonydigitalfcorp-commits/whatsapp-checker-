@@ -10,10 +10,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
 
-// --- Настройки задержек между проверками (чтобы снизить риск бана) ---
 const DELAY_MIN_MS = parseInt(process.env.DELAY_MIN_MS || '4000', 10);
 const DELAY_MAX_MS = parseInt(process.env.DELAY_MAX_MS || '9000', 10);
-// Каждые BATCH_SIZE проверок — длинная пауза
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || '40', 10);
 const BATCH_PAUSE_MS = parseInt(process.env.BATCH_PAUSE_MS || '60000', 10);
 
@@ -21,49 +19,54 @@ function randomDelay(min, max) {
   return new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * (max - min + 1)) + min));
 }
 
-// --- Состояние клиента ---
-let clientState = { status: 'starting', qr: null }; // starting | qr | authenticated | ready | auth_failure
-let job = null; // { total, checked, results: [], done, running, cancelled }
+let clientState = { status: 'starting', qr: null };
+let job = null;
+let client;
 
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
-  puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  }
-});
+function createClient() {
+  const c = new Client({
+    authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
+    puppeteer: {
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
+  });
 
-client.on('qr', async (qr) => {
-  clientState.status = 'qr';
-  clientState.qr = await qrcode.toDataURL(qr);
-  console.log('QR обновлён, отсканируй его в веб-интерфейсе');
-});
+  c.on('qr', async (qr) => {
+    clientState.status = 'qr';
+    clientState.qr = await qrcode.toDataURL(qr);
+    console.log('QR обновлён, отсканируй его в веб-интерфейсе');
+  });
 
-client.on('authenticated', () => {
-  clientState.status = 'authenticated';
-  clientState.qr = null;
-});
+  c.on('authenticated', () => {
+    clientState.status = 'authenticated';
+    clientState.qr = null;
+  });
 
-client.on('ready', () => {
-  clientState.status = 'ready';
-  clientState.qr = null;
-  console.log('WhatsApp клиент готов');
-});
+  c.on('ready', () => {
+    clientState.status = 'ready';
+    clientState.qr = null;
+    console.log('WhatsApp клиент готов');
+  });
 
-client.on('auth_failure', (msg) => {
-  clientState.status = 'auth_failure';
-  console.error('Ошибка авторизации:', msg);
-});
+  c.on('auth_failure', (msg) => {
+    clientState.status = 'auth_failure';
+    console.error('Ошибка авторизации:', msg);
+  });
 
-client.on('disconnected', (reason) => {
-  clientState.status = 'starting';
-  console.error('Клиент отключён:', reason);
-});
+  c.on('disconnected', (reason) => {
+    console.error('Клиент отключён:', reason);
+    clientState.status = 'starting';
+    clientState.qr = null;
+  });
 
+  return c;
+}
+
+client = createClient();
 client.initialize();
 
-// --- Утилита: привести номер к формату для whatsapp-web.js (страна+номер, без +, пробелов, тире) ---
 function normalizeNumber(raw) {
   return raw.replace(/[^\d]/g, '');
 }
@@ -87,7 +90,6 @@ async function runJob(numbers) {
     }
     job.results.push(result);
     job.checked = i + 1;
-
     if (i < numbers.length - 1 && !job.cancelled) {
       await randomDelay(DELAY_MIN_MS, DELAY_MAX_MS);
       if ((i + 1) % BATCH_SIZE === 0) {
@@ -100,10 +102,33 @@ async function runJob(numbers) {
   job.running = false;
 }
 
-// --- API ---
-
 app.get('/api/status', (req, res) => {
   res.json({ clientStatus: clientState.status, qr: clientState.qr });
+});
+
+app.post('/api/logout', async (req, res) => {
+  try {
+    if (client) {
+      await client.logout();
+    }
+  } catch (e) {
+    console.error('Ошибка при выходе:', e.message);
+  }
+  try {
+    const authPath = path.join(__dirname, '.wwebjs_auth');
+    if (fs.existsSync(authPath)) {
+      fs.rmSync(authPath, { recursive: true, force: true });
+    }
+  } catch (e) {
+    console.error('Ошибка при очистке сессии:', e.message);
+  }
+  clientState = { status: 'starting', qr: null };
+  job = null;
+  setTimeout(() => {
+    client = createClient();
+    client.initialize();
+  }, 1000);
+  res.json({ loggedOut: true });
 });
 
 app.post('/api/check', (req, res) => {
