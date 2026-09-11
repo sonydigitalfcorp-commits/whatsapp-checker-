@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="az">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp nömrə yoxlanışı</title>
+<style>
+  :root {
+    --bg: #0b141a;
+    --card: #111b21;
+    --accent: #25d366;
+    --text: #e9edef;
+    --muted: #8696a0;
+    --danger: #f15c6d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { color: var(--muted); font-size: 14px; margin-top: 0; }
+  .card {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 140px;
+    background: #1f2c33;
+    color: var(--text);
+    border: none;
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 15px;
+    resize: vertical;
+  }
+  button {
+    background: var(--accent);
+    color: #04140c;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 15px;
+    font-weight: 600;
+    width: 100%;
+    margin-top: 10px;
+  }
+  button.secondary {
+    background: #2a3942;
+    color: var(--text);
+  }
+  button:disabled { opacity: 0.5; }
+  img#qr { width: 100%; max-width: 260px; display: block; margin: 12px auto; border-radius: 8px; }
+  .status { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .progress-bar {
+    height: 10px;
+    background: #263942;
+    border-radius: 5px;
+    overflow: hidden;
+    margin-top: 10px;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width .3s;
+  }
+  .result-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #1f2c33;
+    font-size: 14px;
+  }
+  .yes { color: var(--accent); font-weight: 600; }
+  .no { color: var(--danger); font-weight: 600; }
+  .results-box { max-height: 320px; overflow-y: auto; margin-top: 10px; }
+  .counts { display: flex; gap: 16px; margin-top: 8px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>WhatsApp nömrə yoxlanışı</h1>
+<p class="sub">Sənin WhatsApp hesabın vasitəsilə işləyir — əvvəlcə giriş lazımdır</p>
+
+<div class="card" id="authCard">
+  <div id="authStatus">WhatsApp-a qoşuluruq...</div>
+  <img id="qr" style="display:none">
+</div>
+
+<div class="card" id="inputCard" style="display:none">
+  <label>Nömrələr (hər sətirdə bir, ölkə kodu ilə, məsələn 994501234567)</label>
+  <textarea id="numbers" placeholder="994501234567&#10;79161234567&#10;..."></textarea>
+  <button id="startBtn">Yoxlamağa başla</button>
+  <button id="cancelBtn" class="secondary" style="display:none">Ləğv et</button>
+</div>
+
+<div class="card" id="progressCard" style="display:none">
+  <div class="status" id="progressText">0 / 0</div>
+  <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  <div class="counts">
+    <span>✅ Var: <b id="yesCount">0</b></span>
+    <span>❌ Yox: <b id="noCount">0</b></span>
+    <span>⚠️ Xəta: <b id="errCount">0</b></span>
+  </div>
+  <button id="downloadBtn" class="secondary" style="display:none">CSV yüklə</button>
+  <div class="results-box" id="resultsBox"></div>
+</div>
+
+<script>
+const authStatus = document.getElementById('authStatus');
+const qrImg = document.getElementById('qr');
+const inputCard = document.getElementById('inputCard');
+const progressCard = document.getElementById('progressCard');
+const startBtn = document.getElementById('startBtn');
+const cancelBtn = document.getElementById('cancelBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const progressText = document.getElementById('progressText');
+const progressFill = document.getElementById('progressFill');
+const resultsBox = document.getElementById('resultsBox');
+const yesCount = document.getElementById('yesCount');
+const noCount = document.getElementById('noCount');
+const errCount = document.getElementById('errCount');
+
+async function pollStatus() {
+  const res = await fetch('/api/status');
+  const data = await res.json();
+  if (data.clientStatus === 'qr' && data.qr) {
+    authStatus.textContent = 'WhatsApp tətbiqində QR kodu skan et (Bağlı cihazlar)';
+    qrImg.src = data.qr;
+    qrImg.style.display = 'block';
+    inputCard.style.display = 'none';
+  } else if (data.clientStatus === 'ready') {
+    authStatus.textContent = '✅ WhatsApp qoşuldu';
+    qrImg.style.display = 'none';
+    inputCard.style.display = 'block';
+  } else if (data.clientStatus === 'auth_failure') {
+    authStatus.textContent = '❌ Giriş xətası, səhifəni yenilə';
+  } else {
+    authStatus.textContent = 'WhatsApp-a qoşuluruq...';
+  }
+}
+
+async function startCheck() {
+  const raw = document.getElementById('numbers').value;
+  const numbers = raw.split('\n').map(s => s.trim()).filter(Boolean);
+  if (numbers.length === 0) return alert('Ən azı bir nömrə daxil et');
+  const res = await fetch('/api/check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ numbers })
+  });
+  const data = await res.json();
+  if (data.error) return alert(data.error);
+  progressCard.style.display = 'block';
+  cancelBtn.style.display = 'block';
+  downloadBtn.style.display = 'none';
+  resultsBox.innerHTML = '';
+  pollProgress();
+}
+
+async function pollProgress() {
+  const res = await fetch('/api/progress');
+  const data = await res.json();
+  if (data.noJob) return;
+  progressText.textContent = `${data.checked} / ${data.total}`;
+  progressFill.style.width = data.total ? (data.checked / data.total * 100) + '%' : '0%';
+
+  let yes = 0, no = 0, err = 0;
+  resultsBox.innerHTML = '';
+  for (const r of data.results) {
+    if (r.error) err++;
+    else if (r.hasWhatsapp) yes++;
+    else no++;
+    const row = document.createElement('div');
+    row.className = 'result-row';
+    const label = r.error ? `⚠️ ${r.error}` : (r.hasWhatsapp ? '<span class="yes">var</span>' : '<span class="no">yox</span>');
+    row.innerHTML = `<span>${r.number}</span>${label}`;
+    resultsBox.prepend(row);
+  }
+  yesCount.textContent = yes;
+  noCount.textContent = no;
+  errCount.textContent = err;
+
+  if (data.done) {
+    cancelBtn.style.display = 'none';
+    downloadBtn.style.display = 'block';
+  } else {
+    setTimeout(pollProgress, 1500);
+  }
+}
+
+startBtn.addEventListener('click', startCheck);
+cancelBtn.addEventListener('click', async () => {
+  await fetch('/api/cancel', { method: 'POST' });
+});
+downloadBtn.addEventListener('click', () => {
+  window.location.href = '/api/download';
+});
+
+pollStatus();
+setInterval(() => {
+  if (!inputCard.style.display || inputCard.style.display === 'none') pollStatus();
+}, 3000);
+</script>
+
+</body>
+</html>
